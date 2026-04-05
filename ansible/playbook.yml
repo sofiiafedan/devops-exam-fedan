@@ -1,0 +1,73 @@
+---
+- name: Install Kubernetes, Minikube, Helm and Dependencies
+  hosts: all
+  become: yes
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+  tasks:
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+
+    - name: Install core dependencies (Docker, Curl)
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - docker.io
+          - conntrack
+        state: present
+
+    - name: Download and install kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+    - name: Download and install Minikube
+      get_url:
+        url: "https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64"
+        dest: /usr/local/bin/minikube
+        mode: '0755'
+
+    - name: Install Helm
+      unarchive:
+        src: "https://get.helm.sh/helm-v3.12.3-linux-amd64.tar.gz"
+        dest: /tmp/
+        remote_src: yes
+        
+    - name: Move Helm binary
+      command: mv /tmp/linux-amd64/helm /usr/local/bin/helm
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Start Minikube (with Docker driver)
+      command: minikube start --driver=docker --force
+      environment:
+        CHANGE_MINIKUBE_NONE_USER: "true"
+
+    # ВИМОГА: Прокидання проксі для доступу до Minikube
+    - name: Setup kubectl proxy as a background service
+      copy:
+        dest: /etc/systemd/system/kubectl-proxy.service
+        content: |
+          [Unit]
+          Description=Kubectl Proxy
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/local/bin/kubectl proxy --address=0.0.0.0 --port=8001 --accept-hosts=^.*$
+          Restart=always
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start and enable proxy service
+      systemd:
+        name: kubectl-proxy
+        state: started
+        enabled: yes
+        daemon_reload: yes

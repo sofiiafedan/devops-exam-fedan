@@ -1,0 +1,37 @@
+name: Ansible Configure Server
+
+on:
+  workflow_dispatch: # Дозволяє запускати конвеєр вручну кнопкою
+
+jobs:
+  ansible-setup:
+    name: "Install K8s Components"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      # ВИМОГА: Перевірка правильності (Dry-Run). Зупинить конвеєр при помилці.
+      - name: Ansible Dry-Run (Check Mode)
+        run: |
+          ansible-playbook -i "${{ secrets.DROPLET_IP }}," -u root ansible/playbook.yml --check
+
+      # ВИМОГА: Реальне встановлення.
+      - name: Ansible Apply (Real Installation)
+        run: |
+          ansible-playbook -i "${{ secrets.DROPLET_IP }}," -u root ansible/playbook.yml
