@@ -1,7 +1,7 @@
 name: Deploy App to Minikube
 
 on:
-  workflow_dispatch: # Ручний запуск
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,60 +14,65 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          # Додаємо сервер у довірені, щоб не було запитів yes/no
-          ssh-keyscan -H ${{ secrets.DROPLET_IP }} >> ~/.ssh/known_hosts
 
-      - name: Deploy via SSH
+      - name: Create Kubernetes Manifest locally
         run: |
-          ssh root@${{ secrets.DROPLET_IP }} << 'EOF'
-            echo "1. Завантажуємо код застосунку..."
+          cat << 'EOF' > k8s-deploy.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: exam-app
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: exam-app
+          template:
+            metadata:
+              labels:
+                app: exam-app
+            spec:
+              containers:
+              - name: exam-app
+                image: exam-app:v1
+                imagePullPolicy: Never
+                ports:
+                - containerPort: 8000
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: exam-app-svc
+          spec:
+            type: ClusterIP
+            selector:
+              app: exam-app
+            ports:
+              - port: 8002
+                targetPort: 8000
+          EOF
+
+      - name: Copy Manifest to Server
+        run: scp -o StrictHostKeyChecking=no k8s-deploy.yaml root@${{ secrets.DROPLET_IP }}:/root/k8s-deploy.yaml
+
+      - name: Build and Deploy via SSH
+        run: |
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_IP }} "
+            echo '1. Завантажуємо код застосунку...'
             rm -rf devops-exam-pt2
             git clone https://github.com/YulianSalo/devops-exam-pt2.git
             cd devops-exam-pt2
-
-            echo "2. Налаштовуємо Docker для роботи з Minikube..."
-            eval $(minikube docker-env)
-
-            echo "3. Збираємо Docker-образ (локально в кластері)..."
+            
+            echo '2. Налаштовуємо Docker...'
+            eval \$(minikube docker-env)
+            
+            echo '3. Збираємо Docker-образ...'
             docker build -t exam-app:v1 .
-
-            echo "4. Створюємо Kubernetes маніфест (Deployment + Service)..."
-            cat << 'YAML' > k8s-deploy.yaml
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: exam-app
-            spec:
-              replicas: 2
-              selector:
-                matchLabels:
-                  app: exam-app
-              template:
-                metadata:
-                  labels:
-                    app: exam-app
-                spec:
-                  containers:
-                  - name: exam-app
-                    image: exam-app:v1
-                    imagePullPolicy: Never # Беремо локальний образ!
-                    ports:
-                    - containerPort: 8080 # <-- УВАГА: Стандартний порт.
-            ---
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: exam-app-svc
-            spec:
-              type: NodePort
-              selector:
-                app: exam-app
-              ports:
-                - port: 80
-                  targetPort: 8080 # <-- УВАГА: Стандартний порт.
-                  nodePort: 30080
-            YAML
-
-            echo "5. Запускаємо застосунок в Kubernetes!"
-            kubectl apply -f k8s-deploy.yaml
-          EOF
+            
+            echo '4. Запускаємо застосунок в Kubernetes!'
+            kubectl apply -f /root/k8s-deploy.yaml
+            
+            echo '5. Прокидаємо порт 8002 за вимогами методички...'
+            pkill -f 'kubectl port-forward' || true
+            nohup kubectl port-forward svc/exam-app-svc 8002:8002 --address 0.0.0.0 > /dev/null 2>&1 &
+          "
