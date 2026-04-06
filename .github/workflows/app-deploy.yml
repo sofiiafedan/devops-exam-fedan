@@ -13,7 +13,7 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Deploy Dev and Release
+      - name: Build and Deploy
         run: |
           ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_IP }} << 'EOF'
             echo "1. Створюємо маніфести для двох середовищ..."
@@ -35,10 +35,17 @@ jobs:
                 spec:
                   containers:
                   - name: exam-app
-                    image: exam-app:v1
+                    image: exam-app:dev
                     imagePullPolicy: Never
                     ports:
                     - containerPort: 8000
+                    env:
+                    - name: ENV
+                      value: "DEVELOP"
+                    - name: ENVIRONMENT
+                      value: "DEVELOP"
+                    - name: VERSION
+                      value: "DEVELOP"
             ---
             apiVersion: v1
             kind: Service
@@ -69,10 +76,17 @@ jobs:
                 spec:
                   containers:
                   - name: exam-app
-                    image: exam-app:v1
+                    image: exam-app:release
                     imagePullPolicy: Never
                     ports:
                     - containerPort: 8000
+                    env:
+                    - name: ENV
+                      value: "1.0.0"
+                    - name: ENVIRONMENT
+                      value: "1.0.0"
+                    - name: VERSION
+                      value: "1.0.0"
             ---
             apiVersion: v1
             kind: Service
@@ -87,16 +101,26 @@ jobs:
                   nodePort: 30003
             YAML
 
-            echo "2. Налаштовуємо Docker..."
+            echo "2. Налаштовуємо Docker та код..."
             eval $(minikube docker-env)
+            rm -rf devops-exam-pt2
+            git clone https://github.com/YulianSalo/devops-exam-pt2.git
             
-            echo "3. Білдимо образ..."
-            docker inspect exam-app:v1 >/dev/null 2>&1 || (git clone https://github.com/YulianSalo/devops-exam-pt2.git && cd devops-exam-pt2 && docker build -t exam-app:v1 .)
+            echo "3. Збираємо образ Release (з main)..."
+            cd devops-exam-pt2
+            git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
+            docker build -t exam-app:release .
             
-            echo "4. Запускаємо в Kubernetes..."
+            echo "4. Збираємо образ Dev (з develop)..."
+            git fetch --all
+            git checkout develop 2>/dev/null || git checkout dev 2>/dev/null || true
+            docker build -t exam-app:dev .
+            
+            echo "5. Запускаємо в Kubernetes..."
+            cd ..
             kubectl apply -f dual-env.yaml
 
-            echo "5. Налаштовуємо Nginx для портів 8002 та 8003..."
+            echo "6. Налаштовуємо Nginx..."
             MINIKUBE_IP=$(minikube ip)
             cat << CONF > /etc/nginx/sites-available/dual-app
             server {
