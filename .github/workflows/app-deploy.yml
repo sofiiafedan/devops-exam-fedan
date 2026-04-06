@@ -16,7 +16,7 @@ jobs:
       - name: Deploy Dev and Release
         run: |
           ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_IP }} << 'EOF'
-            # 1. Створюємо маніфести для двох середовищ
+            echo "1. Створюємо маніфести для двох середовищ..."
             cat << 'YAML' > dual-env.yaml
             # --- DEV ENVIRONMENT (8002) ---
             apiVersion: apps/v1
@@ -87,22 +87,24 @@ jobs:
                   nodePort: 30003
             YAML
 
-            # 2. Перевіряємо Minikube та образ
+            echo "2. Налаштовуємо Docker..."
             eval $(minikube docker-env)
-            # Білдимо образ, якщо його ще немає
+            
+            echo "3. Білдимо образ..."
             docker inspect exam-app:v1 >/dev/null 2>&1 || (git clone https://github.com/YulianSalo/devops-exam-pt2.git && cd devops-exam-pt2 && docker build -t exam-app:v1 .)
             
-            # 3. Запускаємо в Kubernetes
+            echo "4. Запускаємо в Kubernetes..."
             kubectl apply -f dual-env.yaml
 
-            # 4. Налаштовуємо Nginx для обох портів
+            echo "5. Налаштовуємо Nginx для портів 8002 та 8003..."
             MINIKUBE_IP=$(minikube ip)
             cat << CONF > /etc/nginx/sites-available/dual-app
             server {
                 listen 8002;
                 location / { proxy_pass http://$MINIKUBE_IP:30002; }
             }
-            server { listen 8003;
+            server { 
+                listen 8003;
                 location / { proxy_pass http://$MINIKUBE_IP:30003; }
             }
             CONF
