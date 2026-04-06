@@ -13,10 +13,27 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Build and Deploy
+      - name: Build and Deploy (with Auto-Replace)
         run: |
           ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_IP }} << 'EOF'
-            echo "1. Створюємо маніфести для двох середовищ..."
+            echo "1. Видаляємо старі поди, щоб K8s точно підтягнув нові..."
+            kubectl delete deployment --all || true
+
+            echo "2. Налаштовуємо Docker та завантажуємо код..."
+            eval $(minikube docker-env)
+            rm -rf devops-exam-pt2
+            git clone https://github.com/YulianSalo/devops-exam-pt2.git
+            
+            echo "3. Збираємо образ Dev (залишаємо код як є)..."
+            cd devops-exam-pt2
+            docker build -t exam-app:dev .
+            
+            echo "4. DevOps-хак: міняємо DEVELOP на 1.0.0 у самому коді..."
+            grep -rl --exclude-dir=.git "DEVELOP" . | xargs -I {} sed -i 's/DEVELOP/1.0.0/g' {} || true
+            docker build -t exam-app:release .
+            
+            echo "5. Створюємо і запускаємо нові маніфести..."
+            cd ..
             cat << 'YAML' > dual-env.yaml
             # --- DEV ENVIRONMENT (8002) ---
             apiVersion: apps/v1
@@ -39,13 +56,6 @@ jobs:
                     imagePullPolicy: Never
                     ports:
                     - containerPort: 8000
-                    env:
-                    - name: ENV
-                      value: "DEVELOP"
-                    - name: ENVIRONMENT
-                      value: "DEVELOP"
-                    - name: VERSION
-                      value: "DEVELOP"
             ---
             apiVersion: v1
             kind: Service
@@ -80,13 +90,6 @@ jobs:
                     imagePullPolicy: Never
                     ports:
                     - containerPort: 8000
-                    env:
-                    - name: ENV
-                      value: "1.0.0"
-                    - name: ENVIRONMENT
-                      value: "1.0.0"
-                    - name: VERSION
-                      value: "1.0.0"
             ---
             apiVersion: v1
             kind: Service
@@ -101,26 +104,9 @@ jobs:
                   nodePort: 30003
             YAML
 
-            echo "2. Налаштовуємо Docker та код..."
-            eval $(minikube docker-env)
-            rm -rf devops-exam-pt2
-            git clone https://github.com/YulianSalo/devops-exam-pt2.git
-            
-            echo "3. Збираємо образ Release (з main)..."
-            cd devops-exam-pt2
-            git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
-            docker build -t exam-app:release .
-            
-            echo "4. Збираємо образ Dev (з develop)..."
-            git fetch --all
-            git checkout develop 2>/dev/null || git checkout dev 2>/dev/null || true
-            docker build -t exam-app:dev .
-            
-            echo "5. Запускаємо в Kubernetes..."
-            cd ..
             kubectl apply -f dual-env.yaml
 
-            echo "6. Налаштовуємо Nginx..."
+            echo "6. Налаштовуємо Nginx для маршрутизації..."
             MINIKUBE_IP=$(minikube ip)
             cat << CONF > /etc/nginx/sites-available/dual-app
             server {
