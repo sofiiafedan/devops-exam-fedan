@@ -1,78 +1,113 @@
-name: Deploy App to Minikube
+name: Deploy Environments (Dev & Release)
 
 on:
   workflow_dispatch:
 
 jobs:
   deploy:
-    name: "Build & Deploy to K8s"
     runs-on: ubuntu-latest
-
     steps:
-      - name: Setup SSH Key
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Create Kubernetes Manifest locally
+      - name: Deploy Dev and Release
         run: |
-          cat << 'EOF' > k8s-deploy.yaml
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: exam-app
-          spec:
-            replicas: 2
-            selector:
-              matchLabels:
-                app: exam-app
-          template:
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_IP }} << 'EOF'
+            # 1. Створюємо маніфести для двох середовищ
+            cat << 'YAML' > dual-env.yaml
+            # --- DEV ENVIRONMENT (8002) ---
+            apiVersion: apps/v1
+            kind: Deployment
             metadata:
-              labels:
-                app: exam-app
+              name: app-dev
             spec:
-              containers:
-              - name: exam-app
-                image: exam-app:v1
-                imagePullPolicy: Never
-                ports:
-                - containerPort: 8000
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: exam-app-svc
-          spec:
-            type: ClusterIP
-            selector:
-              app: exam-app
-            ports:
-              - port: 8002
-                targetPort: 8000
+              replicas: 1
+              selector:
+                matchLabels:
+                  env: dev
+              template:
+                metadata:
+                  labels:
+                    env: dev
+                spec:
+                  containers:
+                  - name: exam-app
+                    image: exam-app:v1
+                    imagePullPolicy: Never
+                    ports:
+                    - containerPort: 8000
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: svc-dev
+            spec:
+              type: NodePort
+              selector:
+                env: dev
+              ports:
+                - port: 8000
+                  nodePort: 30002
+            ---
+            # --- RELEASE ENVIRONMENT (8003) ---
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: app-release
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  env: release
+              template:
+                metadata:
+                  labels:
+                    env: release
+                spec:
+                  containers:
+                  - name: exam-app
+                    image: exam-app:v1
+                    imagePullPolicy: Never
+                    ports:
+                    - containerPort: 8000
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: svc-release
+            spec:
+              type: NodePort
+              selector:
+                env: release
+              ports:
+                - port: 8000
+                  nodePort: 30003
+            YAML
+
+            # 2. Перевіряємо Minikube та образ
+            eval $(minikube docker-env)
+            # Білдимо образ, якщо його ще немає
+            docker inspect exam-app:v1 >/dev/null 2>&1 || (git clone https://github.com/YulianSalo/devops-exam-pt2.git && cd devops-exam-pt2 && docker build -t exam-app:v1 .)
+            
+            # 3. Запускаємо в Kubernetes
+            kubectl apply -f dual-env.yaml
+
+            # 4. Налаштовуємо Nginx для обох портів
+            MINIKUBE_IP=$(minikube ip)
+            cat << CONF > /etc/nginx/sites-available/dual-app
+            server {
+                listen 8002;
+                location / { proxy_pass http://$MINIKUBE_IP:30002; }
+            }
+            server { listen 8003;
+                location / { proxy_pass http://$MINIKUBE_IP:30003; }
+            }
+            CONF
+            
+            ln -sf /etc/nginx/sites-available/dual-app /etc/nginx/sites-enabled/
+            rm -f /etc/nginx/sites-enabled/default
+            systemctl restart nginx
           EOF
-
-      - name: Copy Manifest to Server
-        run: scp -o StrictHostKeyChecking=no k8s-deploy.yaml root@${{ secrets.DROPLET_IP }}:/root/k8s-deploy.yaml
-
-      - name: Build and Deploy via SSH
-        run: |
-          ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_IP }} "
-            echo '1. Завантажуємо код застосунку...'
-            rm -rf devops-exam-pt2
-            git clone https://github.com/YulianSalo/devops-exam-pt2.git
-            cd devops-exam-pt2
-            
-            echo '2. Налаштовуємо Docker...'
-            eval \$(minikube docker-env)
-            
-            echo '3. Збираємо Docker-образ...'
-            docker build -t exam-app:v1 .
-            
-            echo '4. Запускаємо застосунок в Kubernetes!'
-            kubectl apply -f /root/k8s-deploy.yaml
-            
-            echo '5. Прокидаємо порт 8002 за вимогами методички...'
-            pkill -f 'kubectl port-forward' || true
-            nohup kubectl port-forward svc/exam-app-svc 8002:8002 --address 0.0.0.0 > /dev/null 2>&1 &
-          "
